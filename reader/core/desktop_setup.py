@@ -15,6 +15,27 @@ from pathlib import Path
 TORCH_VERSION = '2.11.0'
 
 
+def gpu_variant(compute_cap: tuple | None) -> tuple[str, tuple] | None:
+    """PyTorch build for a card: (wheel tag, minimum driver CUDA), or None if too old.
+
+    The CUDA 12.8 wheels only carry kernels from Turing (sm_75) up; Maxwell,
+    Pascal and Volta cards (GTX 900/1000 series, Titan V) need the CUDA 12.6
+    wheels. An unknown capability keeps the modern build.
+    """
+    if compute_cap is None or compute_cap >= (7, 5):
+        return 'cu128', (12, 8)
+    if compute_cap >= (5, 0):
+        return 'cu126', (12, 6)
+    return None
+
+
+def installed_gpu_variant(root: Path) -> str:
+    try:
+        return str(json.loads((root / 'runtime' / 'gpu' / 'ready.json').read_text(encoding='utf-8')).get('variant') or '')
+    except (OSError, ValueError):
+        return ''
+
+
 def setup_complete(root: Path) -> bool:
     try:
         return bool(json.loads((root / 'data' / 'settings.json').read_text(encoding='utf-8')).get('desktop_setup_complete'))
@@ -23,7 +44,8 @@ def setup_complete(root: Path) -> bool:
 
 
 def hardware() -> dict:
-    result = {'nvidia': '', 'cuda': '', 'gpu_supported': False}
+    result = {'nvidia': '', 'cuda': '', 'compute_cap': '', 'variant': '', 'min_cuda': '12.8',
+              'gpu_supported': False}
     try:
         flags = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
         # nvidia-smi prints GPU process paths in the ANSI code page; an accented
@@ -34,8 +56,16 @@ def hardware() -> dict:
         name = subprocess.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
                               capture_output=True, text=True, timeout=10, **flags)
         if info.returncode == 0 and match:
+            cap = subprocess.run(['nvidia-smi', '--query-gpu=compute_cap', '--format=csv,noheader'],
+                                 capture_output=True, text=True, timeout=10, **flags)
+            cap_match = re.match(r'\s*(\d+)\.(\d+)', cap.stdout or '') if cap.returncode == 0 else None
+            compute_cap = tuple(map(int, cap_match.groups())) if cap_match else None
+            variant = gpu_variant(compute_cap)
             result.update(nvidia=name.stdout.strip().split('\n')[0], cuda='.'.join(match.groups()),
-                          gpu_supported=tuple(map(int, match.groups())) >= (12, 8))
+                          compute_cap='.'.join(cap_match.groups()) if cap_match else '')
+            if variant:
+                result.update(variant=variant[0], min_cuda='.'.join(map(str, variant[1])),
+                              gpu_supported=tuple(map(int, match.groups())) >= variant[1])
     except (OSError, subprocess.SubprocessError):
         pass
     return result
@@ -60,15 +90,22 @@ class SetupController:
     def machine(self) -> dict:
         if self._hardware is None:
             self._hardware = hardware()
-        return dict(self._hardware)
+        info = dict(self._hardware)
+        installed = installed_gpu_variant(self.root)
+        # A build made for newer cards fails with "no kernel image" (issue #13).
+        info['gpu_mismatch'] = bool(installed and info['variant'] and installed != info['variant'])
+        return info
 
     def start(self, engine: str, gpu: bool) -> None:
         if engine not in ('supertonic', 'omnivoice'):
             raise ValueError('Ismeretlen beszédmotor.')
         if gpu and engine != 'omnivoice':
             raise ValueError('A Supertonichoz nem kell GPU-telepítés: a videokártyát DirectML-lel külön letöltés nélkül is használja.')
-        if gpu and not self.machine()['gpu_supported']:
-            raise ValueError('Ehhez az NVIDIA-gyorsításhoz CUDA 12.8-at támogató vagy újabb NVIDIA-illesztőprogram szükséges. CPU-val is elindíthatod.')
+        machine = self.machine()
+        if gpu and machine['nvidia'] and not machine['variant']:
+            raise ValueError('Ez az NVIDIA-kártya túl régi a gyorsításhoz. CPU-val is elindíthatod.')
+        if gpu and not machine['gpu_supported']:
+            raise ValueError(f'Ehhez az NVIDIA-gyorsításhoz CUDA {machine["min_cuda"]}-at támogató vagy újabb NVIDIA-illesztőprogram szükséges. CPU-val is elindíthatod.')
         with self._lock:
             if self._state['state'] == 'running':
                 raise ValueError('A kezdeti beállítás már folyamatban van.')
@@ -79,7 +116,7 @@ class SetupController:
     def _run(self, engine: str, gpu: bool):
         try:
             if gpu:
-                self._install_gpu()
+                self._install_gpu(self.machine()['variant'])
             self._download_model(engine)
             from core import settings
             from core.paths import omnivoice_model
@@ -94,11 +131,12 @@ class SetupController:
             logging.getLogger(__name__).exception('Desktop setup failed')
             self._update(state='error', message=f'A beállítás nem fejeződött be: {exc}. Ellenőrizd az internetkapcsolatot és a szabad tárhelyet, majd próbáld újra.')
 
-    def _install_gpu(self):
+    def _install_gpu(self, variant: str):
         from core.desktop_support import write_json, python_command
         runtime = self.root / 'runtime'
         target = runtime / 'gpu'
-        if (target / 'ready.json').is_file():
+        pending = runtime / 'gpu-pending'
+        if installed_gpu_variant(self.root) == variant:
             return
         stage = runtime / ('gpu-download-' + uuid.uuid4().hex)
         stage.mkdir(parents=True)
@@ -110,17 +148,24 @@ class SetupController:
             with log_path.open('w', encoding='utf-8') as output:
                 subprocess.run([*python_command(), '-m', 'pip', 'install', '--disable-pip-version-check',
                                 '--no-warn-script-location', '--no-deps', '--target', str(stage),
-                                f'torch=={TORCH_VERSION}+cu128', f'torchaudio=={TORCH_VERSION}+cu128',
-                                '--index-url', 'https://download.pytorch.org/whl/cu128'],
+                                f'torch=={TORCH_VERSION}+{variant}', f'torchaudio=={TORCH_VERSION}+{variant}',
+                                '--index-url', f'https://download.pytorch.org/whl/{variant}'],
                                stdout=output, stderr=subprocess.STDOUT, check=True, **flags)
-                probe = 'import sys;sys.path.insert(0,sys.argv[1]);import torch,torchaudio;assert torch.cuda.is_available();print(torch.cuda.get_device_name(0))'
+                # is_available() is true even when the build has no kernels for the card,
+                # so run a real kernel before accepting the installation.
+                probe = ('import sys;sys.path.insert(0,sys.argv[1]);import torch,torchaudio;'
+                         'x=torch.ones(8,device="cuda");assert float((x*2).sum())==16;'
+                         'print(torch.cuda.get_device_name(0))')
                 subprocess.run([*python_command(), '-c', probe, str(stage)], stdout=output,
                                stderr=subprocess.STDOUT, check=True, **flags)
-            write_json(stage / 'ready.json', {'torch': TORCH_VERSION, 'variant': 'cu128'})
-            # No running process ever imports an incomplete GPU installation.
+            write_json(stage / 'ready.json', {'torch': TORCH_VERSION, 'variant': variant})
+            # No running process ever imports an incomplete GPU installation. An
+            # existing build may be loaded right now, so it is replaced at the next start.
             if target.exists():
-                raise RuntimeError('A GPU-mappa már létezik; az eltérő telepítést a napló alapján javítani kell.')
-            stage.rename(target)
+                shutil.rmtree(pending, ignore_errors=True)
+                stage.rename(pending)
+            else:
+                stage.rename(target)
         finally:
             if stage.exists() and stage.resolve().parent == runtime.resolve():
                 shutil.rmtree(stage)

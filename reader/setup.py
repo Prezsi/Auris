@@ -12,7 +12,7 @@ Environment:
     AURIS_USE_LOCAL_WHEELS=1 Use a local wheel directory before package indexes.
     AURIS_WHEELS_DIR=...     Override the local wheel directory path.
     AURIS_TRITON=1           Also install the optional Triton kernels (NVIDIA).
-    AURIS_TORCH_VARIANT=...  Force the PyTorch build: cu128, cu124, rocm, cpu...
+    AURIS_TORCH_VARIANT=...  Force the PyTorch build: cu128, cu126, cu124, rocm, cpu...
     AURIS_ROCM_GFX=gfxNNNN   AMD GPU target when auto-detection cannot name it.
     AURIS_ROCM_INDEX_URL=... AMD ROCm wheel index (default: stable channel).
 """
@@ -127,6 +127,21 @@ def detect_cuda_version():
     return None
 
 
+def detect_nvidia_compute_capability():
+    """Return the first NVIDIA GPU's compute capability as (major, minor), or None."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    match = re.match(r"\s*(\d+)\.(\d+)", result.stdout or "") if result.returncode == 0 else None
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
 def is_apple_silicon():
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
@@ -173,6 +188,12 @@ def detect_hardware():
     cuda_version = detect_cuda_version()
     if cuda_version:
         tag = cuda_to_wheel_tag(cuda_version)
+        capability = detect_nvidia_compute_capability() if tag == "cu128" else None
+        if capability and capability < (7, 5):
+            # The CUDA 12.8 wheels start at Turing (sm_75); GTX 900/1000 and
+            # Volta cards need the CUDA 12.6 build.
+            ok(f"Compute capability {capability[0]}.{capability[1]}: using the cu126 build")
+            tag = "cu126"
         if tag:
             ok(f"NVIDIA GPU detected. CUDA {cuda_version} -> torch wheel: {tag}")
             return tag
@@ -431,6 +452,8 @@ def verify_torch(hw_tag):
         code += (
             "assert torch.version.cuda and torch.cuda.is_available(), "
             "'CUDA is unavailable: check the PyTorch build and NVIDIA driver'; "
+            "x = torch.ones(8, device='cuda'); "
+            "assert float((x * 2).sum()) == 16, 'CUDA kernel check failed'; "
             "print('GPU:', torch.cuda.get_device_name(0))"
         )
     elif hw_tag == "rocm":

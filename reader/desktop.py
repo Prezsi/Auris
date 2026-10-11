@@ -33,7 +33,8 @@ def main() -> int:
     tools = install_root / 'tools'
     if tools.is_dir():
         os.environ['PATH'] = str(tools) + os.pathsep + os.environ.get('PATH', '')
-    from core.desktop_support import InstanceLock, activate_gpu_runtime, write_json, python_command
+    from core.desktop_support import (InstanceLock, activate_gpu_runtime, install_pending_gpu_runtime,
+                                      write_json, python_command)
     lock = InstanceLock(root)
     if not lock.acquire():
         if os.name == 'nt' and not args.headless:
@@ -43,6 +44,7 @@ def main() -> int:
                 ctypes.windll.user32.ShowWindow(window, 9)
                 ctypes.windll.user32.SetForegroundWindow(window)
         return 0
+    install_pending_gpu_runtime(root)
     activate_gpu_runtime()
     logs = root / 'logs'
     logs.mkdir(exist_ok=True)

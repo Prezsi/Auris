@@ -86,6 +86,17 @@ class DesktopLifecycleTests(unittest.TestCase):
                 import sys
                 self.assertEqual(sys.path[0], str(runtime))
 
+    def test_gpu_build_staged_while_loaded_replaces_the_old_one_at_next_start(self):
+        from core.desktop_support import install_pending_gpu_runtime
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = Path(folder) / 'runtime'
+            for name, variant in (('gpu', 'cu128'), ('gpu-pending', 'cu126')):
+                (runtime / name).mkdir(parents=True)
+                (runtime / name / 'ready.json').write_text(f'{{"variant": "{variant}"}}')
+            install_pending_gpu_runtime(Path(folder))
+            self.assertIn('cu126', (runtime / 'gpu' / 'ready.json').read_text())
+            self.assertEqual(sorted(p.name for p in runtime.iterdir()), ['gpu'])
+
 
 class DesktopSetupTests(unittest.TestCase):
     def setUp(self):
@@ -96,11 +107,50 @@ class DesktopSetupTests(unittest.TestCase):
     def test_modern_nvidia_smi_umd_header_is_recognised(self):
         import subprocess
         outputs = [subprocess.CompletedProcess([], 0, 'CUDA UMD Version: 13.4', ''),
-                   subprocess.CompletedProcess([], 0, 'NVIDIA GeForce RTX 3090\n', '')]
+                   subprocess.CompletedProcess([], 0, 'NVIDIA GeForce RTX 3090\n', ''),
+                   subprocess.CompletedProcess([], 0, '8.6\n', '')]
         with patch('core.desktop_setup.subprocess.run', side_effect=outputs):
             info = self.setup.hardware()
         self.assertTrue(info['gpu_supported'])
         self.assertEqual(info['nvidia'], 'NVIDIA GeForce RTX 3090')
+        self.assertEqual(info['variant'], 'cu128')
+
+    def nvidia(self, cuda, name, cap):
+        import subprocess
+        outputs = [subprocess.CompletedProcess([], 0, f'CUDA Version: {cuda}', ''),
+                   subprocess.CompletedProcess([], 0, name + '\n', ''),
+                   subprocess.CompletedProcess([], 0, cap + '\n', '')]
+        with patch('core.desktop_setup.subprocess.run', side_effect=outputs):
+            return self.setup.hardware()
+
+    def test_pascal_card_gets_the_cuda_12_6_build(self):
+        # Issue #13: the cu128 wheels have no sm_61 kernels for a GTX 1080 Ti.
+        info = self.nvidia('12.8', 'NVIDIA GeForce GTX 1080 Ti', '6.1')
+        self.assertEqual((info['variant'], info['min_cuda'], info['gpu_supported']), ('cu126', '12.6', True))
+        self.assertTrue(self.nvidia('12.6', 'NVIDIA GeForce GTX 1080 Ti', '6.1')['gpu_supported'])
+        self.assertFalse(self.nvidia('12.6', 'NVIDIA GeForce RTX 3090', '8.6')['gpu_supported'])
+
+    def test_card_older_than_maxwell_is_not_offered_gpu_acceleration(self):
+        info = self.nvidia('12.8', 'NVIDIA Tesla K80', '3.7')
+        self.assertEqual((info['variant'], info['gpu_supported']), ('', False))
+
+    def test_installed_build_for_newer_cards_is_reported_and_reinstalled_beside_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            gpu = root / 'runtime' / 'gpu'
+            gpu.mkdir(parents=True)
+            (gpu / 'ready.json').write_text('{"variant": "cu128"}')
+            controller = self.setup.SetupController(root)
+            controller._hardware = {'nvidia': 'GTX 1080 Ti', 'variant': 'cu126', 'min_cuda': '12.6',
+                                    'gpu_supported': True}
+            self.assertTrue(controller.machine()['gpu_mismatch'])
+            commands = []
+            with patch('core.desktop_setup.subprocess.run', side_effect=lambda cmd, **kw: commands.append(cmd)):
+                controller._install_gpu('cu126')
+            self.assertIn('torch==2.11.0+cu126', commands[0])
+            self.assertIn('torch.ones(8,device="cuda")', commands[1][-2])
+            self.assertIn('cu128', (gpu / 'ready.json').read_text())  # still loaded until restart
+            self.assertIn('cu126', (root / 'runtime' / 'gpu-pending' / 'ready.json').read_text())
 
     def test_accented_process_path_in_nvidia_smi_output_is_tolerated(self):
         # nvidia-smi lists GPU processes in the ANSI code page; the packaged

@@ -1,7 +1,9 @@
 """Small startup helpers, also used by isolated AI worker processes."""
 import json
 import os
+import shutil
 import sys
+import uuid
 from pathlib import Path
 
 
@@ -19,6 +21,28 @@ def activate_gpu_runtime() -> None:
     runtime = Path(root) / 'runtime' / 'gpu'
     if (runtime / 'ready.json').is_file():
         sys.path.insert(0, str(runtime))
+
+
+def install_pending_gpu_runtime(root: Path) -> None:
+    """Swap in a GPU build staged while the previous one was loaded.
+
+    Runs in the desktop process before anything imports torch; if the old
+    folder is still locked, the swap is retried at the next start.
+    """
+    runtime = Path(root) / 'runtime'
+    pending, target = runtime / 'gpu-pending', runtime / 'gpu'
+    if not (pending / 'ready.json').is_file():
+        return
+    retired = runtime / ('gpu-old-' + uuid.uuid4().hex)
+    try:
+        if target.exists():
+            target.rename(retired)
+        pending.rename(target)
+    except OSError:
+        if retired.exists() and not target.exists():
+            retired.rename(target)
+        return
+    shutil.rmtree(retired, ignore_errors=True)
 
 
 class InstanceLock:

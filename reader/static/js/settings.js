@@ -552,6 +552,9 @@ async function reloadTTS() {
     } else if (st.state === 'error') {
       finished = true;
       hint.textContent = 'Betöltési hiba: ' + (st.message || 'ismeretlen hiba');
+      if (/no kernel image/i.test(st.message || '')) {
+        hint.textContent += ' — A telepített PyTorch nem támogatja ezt a videokártyát. Az asztali alkalmazásban nyisd meg a Súgóból az asztali kezdeti beállítást, és telepítsd újra az NVIDIA-gyorsítást.';
+      }
       hint.className = 'status-hint status-error';
     } else if (Date.now() - started > 30 * 60 * 1000) {
       finished = true;

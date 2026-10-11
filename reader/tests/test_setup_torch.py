@@ -182,6 +182,15 @@ class TorchInstallTests(unittest.TestCase):
         code = run.call_args.args[0][-1]
         self.assertIn('import torchaudio', code)
         self.assertIn('torch.cuda.is_available()', code)
+        self.assertIn("torch.ones(8, device='cuda')", code)
+
+    def test_pascal_card_installs_the_cuda_12_6_build(self):
+        with patch.dict(installer.os.environ, {'AURIS_TORCH_VARIANT': ''}), \
+                patch.object(installer, 'is_apple_silicon', return_value=False), \
+                patch.object(installer, 'rocm_runtime_works', return_value=False), \
+                patch.object(installer, 'detect_cuda_version', return_value='12.8'), \
+                patch.object(installer, 'detect_nvidia_compute_capability', return_value=(6, 1)):
+            self.assertEqual(installer.detect_hardware(), 'cu126')
 
 
 if __name__ == '__main__':

@@ -25,9 +25,15 @@
           <p><span class="status-dot"></span>Elérhető NVIDIA-kártya: <strong>{{ hardware.nvidia }}</strong></p>
           <label class="gpu-option"><input id="gpu" type="checkbox" disabled> NVIDIA-gyorsítás telepítése az OmniVoice-hoz</label>
           <p class="small">További több GB-os letöltés. A szükséges összetevőket az Auris automatikusan telepíti.</p>
+          {% if hardware.gpu_mismatch %}
+          <p class="small"><strong>A korábban telepített NVIDIA-gyorsítás ezen a kártyán nem fut.</strong> Válaszd az OmniVoice-t és az NVIDIA-gyorsítást: az Auris a kártyához illő változatot telepíti, és újraindítás után azt használja.</p>
+          {% endif %}
+          {% elif hardware.nvidia and not hardware.variant %}
+          <p>Felismert kártya: <strong>{{ hardware.nvidia }}</strong></p>
+          <p class="small">Ez a kártya túl régi az NVIDIA-gyorsításhoz. Az Auris CPU-val használható.</p>
           {% elif hardware.nvidia %}
           <p>Felismert kártya: <strong>{{ hardware.nvidia }}</strong></p>
-          <p class="small">CPU-val elindíthatod az Aurist. NVIDIA-gyorsításhoz előbb frissítsd az illesztőprogramot (CUDA 12.8 támogatás), majd nyisd meg újra ezt a beállítást.</p>
+          <p class="small">CPU-val elindíthatod az Aurist. NVIDIA-gyorsításhoz előbb frissítsd az illesztőprogramot (CUDA {{ hardware.min_cuda }} támogatás), majd nyisd meg újra ezt a beállítást.</p>
           {% else %}
           <p><span class="status-dot"></span>A CPU-s felolvasás rendelkezésre áll.</p>
           {% endif %}
