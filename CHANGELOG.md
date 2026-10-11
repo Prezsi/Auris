@@ -12,17 +12,23 @@ represent a new product generation or an incompatible change.
 
 ## [Unreleased]
 
+## [4.9.2] - 2026-10-11
+
 ### Magyar
 
 #### Javítva
 
 - Az egyetlen HTML-fájlból álló EPUB-ok (jellemzően MOBI-ból konvertált könyvek), amelyekben a fejezetcímek csupasz számozott címsorok – például „1.”, „2.” –, már fejezetekre bomlanak; korábban az egész könyv egyetlen „Tartalom” című fejezet lett. A könyv végére nyomtatott tartalomjegyzék nem kerül az utolsó fejezet felolvasott szövegébe.
+- A régebbi NVIDIA-kártyákon (GTX 900 és GTX 1000 sorozat, például GTX 1080 Ti; Titan V) az OmniVoice NVIDIA-gyorsítása már működik. Az asztali alkalmazás eddig ezekre is a csak RTX 20-as sorozattól futó PyTorch-csomagot telepítette, és a motor „no kernel image is available” hibával nem töltődött be. Mostantól a kártyához illő CUDA 12.6-os csomag kerül fel, a telepítés pedig próbaművelettel ellenőrzi, hogy a kártyán valóban fut-e. Ahol a rossz csomag már telepítve van, a kezdeti beállítás oldala ezt jelzi; az újratelepített csomag az alkalmazás újraindításakor lép életbe. A forrásból telepítő `setup.py` is a kártyához illő csomagot választja. (#13)
+- A Best-of-N export már nem áll le „Túl rövid hang a hanghasonlóság méréséhez” hibával, ha a szövegben önálló jelenetelválasztó (például `*`) szerepel. A kimondható szöveg nélküli szegmenseket a take-választás kihagyja, a túl rövid, nem mérhető take pedig a rangsor végére kerül. (#14)
 
 ### English
 
 #### Fixed
 
 - EPUBs made of a single HTML file (typically books converted from MOBI) whose chapter titles are bare numbered headings such as "1.", "2." are now split into chapters; previously the whole book became one chapter titled "Tartalom". A table of contents printed at the end of the book is no longer part of the last chapter's narrated text.
+- OmniVoice NVIDIA acceleration now works on older NVIDIA cards (GTX 900 and GTX 1000 series such as the GTX 1080 Ti; Titan V). The desktop app used to install a PyTorch build that only runs on RTX 20 series and newer, so the engine failed to load with "no kernel image is available". It now installs the matching CUDA 12.6 build and checks with a test operation that it really runs on the card. Where the wrong build is already installed, the first-run setup page says so, and the reinstalled build takes effect when the app restarts. The source installer `setup.py` picks the matching build as well. (#13)
+- Best-of-N export no longer stops with "Túl rövid hang a hanghasonlóság méréséhez" (audio too short to measure speaker similarity) when the text contains a standalone scene break such as `*`. Segments without speakable text are skipped by take selection, and a take too short to measure ranks last. (#14)
 
 ## [4.9.1] - 2026-10-09
 
