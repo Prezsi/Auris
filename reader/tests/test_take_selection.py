@@ -143,6 +143,35 @@ class ExportTakeSelectionTest(unittest.TestCase):
         self.assertEqual(leftovers, [os.path.basename(row["audio_path"])])
         self.assertEqual((job["total"], job["done"]), (2, 2))
 
+    def test_scene_break_segment_is_skipped(self):
+        # Issue #14: a lone "*" between scenes renders to (almost) no audio.
+        with database.get_conn() as conn:
+            conn.execute("INSERT INTO tts_segments (id, book_id, chapter_id, segment_index, text, enriched_text, "
+                         "audio_path, duration_sec, cache_key) VALUES (4, 1, 2, 1, '*', '*', ?, 0.0, 'k*')",
+                         (self.take0,))
+        job = {"total": 2, "done": 2}
+        take_selection.select_export_takes(self.app, 1, self.segments(), job, "similar5")
+        self.assertEqual([item["text"] for item in self.engine.calls[0]], ["Jó reggelt kívánok."] * 4)
+        self.assertEqual(job["total"], 3)
+        self.assertFalse(take_selection.speakable("[pause] * * *"))
+        self.assertTrue(take_selection.speakable("Ó!"))
+
+    def test_take_too_short_to_measure_does_not_stop_export(self):
+        embedder = FakeEmbedder()
+        measure = embedder.embed_file
+
+        def embed_file(path):
+            if "take4" in path:
+                raise ValueError("Túl rövid hang a hanghasonlóság méréséhez.")
+            return measure(path)
+
+        embedder.embed_file = embed_file
+        with patch("core.speaker_similarity.get_embedder", return_value=embedder):
+            take_selection.select_export_takes(self.app, 1, self.segments(), None, "similar5")
+        # Take 4 ranks last, so Whisper checks takes 1, 2 and 0 and keeps the first of the tied ones.
+        self.assertTrue(self.segments()[0]["audio_path"].endswith("take1.wav"))
+        self.assertNotIn("take4", " ".join(self.transcriber.heard))
+
     def test_same_mode_is_not_repeated(self):
         take_selection.select_export_takes(self.app, 1, self.segments(), None, "similar5")
         self.engine.calls.clear()

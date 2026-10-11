@@ -65,6 +65,13 @@ def fewest_errors(takes: list[dict], checks: int) -> Choice:
     return Choice(checked[best], len(checked), "fewest-errors")
 
 
+def speakable(text: str | None) -> bool:
+    """Scene breaks such as ``*`` say nothing, so there is no take to choose."""
+    from core.local_engines import _TAG_RE
+
+    return any(ch.isalnum() for ch in _TAG_RE.sub(' ', text or ''))
+
+
 def policy_name(mode: str) -> str | None:
     spec = TAKE_MODES.get(mode)
     return f"similar:{spec[0]}:{spec[1]}" if spec else None
@@ -90,6 +97,15 @@ def _voice_for(seg: dict, chars: dict, narrator_ref, narrator_text) -> tuple[str
         ref = char.get('ref_audio_path') or None
         return ref, ((char.get('ref_text') or None) if ref else None)
     return narrator_ref, narrator_text
+
+
+def _embed(embedder, path: str):
+    """The clip's embedding, or None when it is too short to measure."""
+    try:
+        return embedder.embed_file(path)
+    except ValueError as exc:
+        log.warning('Speaker similarity skipped for %s: %s', path, exc)
+        return None
 
 
 def _similarity_target(engine, item: dict) -> str | None:
@@ -126,7 +142,7 @@ def select_export_takes(application, book_id: int, segs: list[dict], job: dict |
         return 0
     count, checks = spec
     policy = policy_name(mode)
-    todo = [s for s in segs if s.get('id') and s.get('enriched_text') and s.get('audio_path')
+    todo = [s for s in segs if s.get('id') and speakable(s.get('enriched_text')) and s.get('audio_path')
             and os.path.exists(s['audio_path']) and s.get('take_policy') != policy]
     if not todo:
         return 0
@@ -180,12 +196,15 @@ def select_export_takes(application, book_id: int, segs: list[dict], job: dict |
                     take['judge'] = (lambda path=take['audio_path'], text=seg['enriched_text']: _judge(
                         transcriber, path, text, language))
                 target_path = _similarity_target(engine, item)
-                if target_path:
-                    if target_path not in targets:
-                        targets[target_path] = embedder.embed_file(target_path)
-                    for take in takes:
-                        take['similarity'] = speaker_similarity.similarity(
-                            embedder.embed_file(take['audio_path']), targets[target_path])
+                if target_path and target_path not in targets:
+                    targets[target_path] = _embed(embedder, target_path)
+                target = targets.get(target_path) if target_path else None
+                vectors = [_embed(embedder, take['audio_path']) for take in takes] if target is not None else []
+                if any(v is not None for v in vectors):
+                    # A take too short to measure ranks last instead of stopping the export.
+                    for take, vector in zip(takes, vectors):
+                        take['similarity'] = (speaker_similarity.similarity(vector, target)
+                                              if vector is not None else -1.0)
                     choice = most_similar_clean(takes, checks)
                 else:
                     choice = fewest_errors(takes, checks)
